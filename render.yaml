@@ -1,0 +1,33 @@
+services:
+  # Backend API Service
+  - type: web
+    name: inventory-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootDir: backend
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /api/dashboard
+    autoDeploy: true
+
+  # Frontend Static Site
+  - type: web
+    name: inventory-frontend
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    rootDir: frontend
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://inventory-api.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    autoDeploy: true
