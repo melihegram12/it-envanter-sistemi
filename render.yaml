@@ -3,6 +3,7 @@ services:
   - type: web
     name: inventory-api
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     rootDir: backend
@@ -13,9 +14,9 @@ services:
     autoDeploy: true
 
   # Frontend Static Site
-  - type: web
+  - type: static
     name: inventory-frontend
-    runtime: static
+    plan: free
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
     rootDir: frontend
@@ -31,3 +32,4 @@ services:
         source: /*
         destination: /index.html
     autoDeploy: true
+
