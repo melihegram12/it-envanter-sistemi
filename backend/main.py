@@ -111,6 +111,14 @@ def get_material(kod: str):
         raise HTTPException(status_code=404, detail="Malzeme bulunamadı")
     return material
 
+@app.get("/api/materials/by-barcode/{barcode}", response_model=Material)
+def get_material_by_barcode(barcode: str):
+    """Barkod/QR kod ile malzeme getir"""
+    material = excel_manager.get_material_by_barcode(barcode)
+    if not material:
+        raise HTTPException(status_code=404, detail="Bu barkodla malzeme bulunamadı")
+    return material
+
 @app.post("/api/materials", response_model=Material)
 def create_material(material: MaterialCreate):
     """Yeni malzeme ekle"""

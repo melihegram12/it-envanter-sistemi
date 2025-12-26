@@ -282,6 +282,14 @@ class ExcelManager:
                 return m
         return None
     
+    def get_material_by_barcode(self, barcode: str) -> Optional[Material]:
+        """Barkod/QR kod ile malzeme bul"""
+        materials = self.get_all_materials()
+        for m in materials:
+            if m.barkod and m.barkod.lower() == barcode.lower():
+                return m
+        return None
+    
     def create_material(self, material: MaterialCreate) -> Material:
         """Yeni malzeme ekle"""
         wb = load_workbook(self.file_path)
@@ -1173,21 +1181,42 @@ class ExcelManager:
             
             # Başlık satırını bul ve kolon indexlerini belirle
             headers = {}
-            for col_idx, cell in enumerate(import_ws[1], 1):
-                if cell.value:
-                    header_lower = str(cell.value).lower().strip()
-                    if 'sayı' in header_lower or 'sıra' in header_lower or 'no' in header_lower:
-                        headers['sayi'] = col_idx
-                    elif 'ürün' in header_lower or 'ad' in header_lower or 'malzeme' in header_lower:
-                        headers['urun_adi'] = col_idx
-                    elif 'adet' in header_lower or 'miktar' in header_lower or 'stok' in header_lower:
-                        headers['adet'] = col_idx
-                    elif 'durum' in header_lower:
-                        headers['durum'] = col_idx
+            header_row = []
             
+            for col_idx, cell in enumerate(import_ws[1], 1):
+                cell_value = cell.value
+                if cell_value:
+                    header_lower = str(cell_value).lower().strip()
+                    header_row.append(str(cell_value))
+                    
+                    # Sayı/Sıra/No kolonu
+                    if 'sayı' in header_lower or 'sıra' in header_lower or 'no' in header_lower or header_lower == 's':
+                        headers['sayi'] = col_idx
+                    # Ürün Adı kolonu - daha fazla varyasyon
+                    elif any(k in header_lower for k in ['ürün', 'urun', 'ad', 'malzeme', 'isim', 'adi', 'adı', 'product', 'name', 'ürün adı', 'urun adi']):
+                        headers['urun_adi'] = col_idx
+                    # Adet kolonu
+                    elif any(k in header_lower for k in ['adet', 'miktar', 'stok', 'quantity', 'qty', 'amount']):
+                        headers['adet'] = col_idx
+                    # Durum kolonu
+                    elif any(k in header_lower for k in ['durum', 'status', 'state']):
+                        headers['durum'] = col_idx
+                else:
+                    header_row.append('')
+            
+            # Eğer urun_adi bulunamadıysa, 2. kolonu varsayılan olarak kullan
             if 'urun_adi' not in headers:
-                import_wb.close()
-                return {"success": False, "error": "Ürün Adı kolonu bulunamadı", "imported": 0, "skipped": 0}
+                # Kolon sayısı 2 veya daha fazlaysa, 2. kolonu ürün adı olarak kabul et
+                if len(header_row) >= 2:
+                    headers['urun_adi'] = 2
+                else:
+                    import_wb.close()
+                    return {
+                        "success": False, 
+                        "error": f"Ürün Adı kolonu bulunamadı. Bulunan kolonlar: {', '.join(header_row) if header_row else 'Boş'}",
+                        "imported": 0, 
+                        "skipped": 0
+                    }
             
             # Ana Excel dosyasını aç
             wb = load_workbook(self.file_path)

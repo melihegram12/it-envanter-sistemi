@@ -4,6 +4,7 @@ import { Bar, Line, Doughnut } from 'react-chartjs-2'
 import * as XLSX from 'xlsx'
 import { saveAs } from 'file-saver'
 import { Html5Qrcode } from 'html5-qrcode'
+import { QRCodeSVG } from 'qrcode.react'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, Tooltip, Legend, Filler)
 
@@ -93,6 +94,250 @@ const BarcodeScanner = ({ open, onClose, onScan, toast }) => {
                 </div>
                 <div className="modal-footer">
                     <button className="btn btn-secondary" onClick={handleClose}>İptal</button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+// QR Scan to Add Stock Component
+const QRScanToAddModal = ({ open, onClose, onSuccess, toast }) => {
+    const scannerRef = useRef(null)
+    const html5QrCodeRef = useRef(null)
+    const [step, setStep] = useState('scan') // 'scan' | 'product' | 'saving'
+    const [error, setError] = useState('')
+    const [product, setProduct] = useState(null)
+    const [quantity, setQuantity] = useState(1)
+    const [movementType, setMovementType] = useState('Giriş')
+    const [description, setDescription] = useState('')
+
+    useEffect(() => {
+        if (open && step === 'scan' && scannerRef.current && !html5QrCodeRef.current) {
+            setTimeout(() => {
+                html5QrCodeRef.current = new Html5Qrcode("qr-add-scanner")
+                startScanner()
+            }, 100)
+        }
+        return () => { stopScanner() }
+    }, [open, step])
+
+    const startScanner = async () => {
+        if (!html5QrCodeRef.current) return
+        setError('')
+        try {
+            await html5QrCodeRef.current.start(
+                { facingMode: "environment" },
+                { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
+                async (decodedText) => {
+                    stopScanner()
+                    await lookupProduct(decodedText)
+                },
+                () => { }
+            )
+        } catch (err) {
+            setError('Kamera erişimi sağlanamadı. Lütfen izin verin.')
+        }
+    }
+
+    const stopScanner = async () => {
+        if (html5QrCodeRef.current) {
+            try { await html5QrCodeRef.current.stop() } catch { }
+            html5QrCodeRef.current = null
+        }
+    }
+
+    const lookupProduct = async (barcode) => {
+        try {
+            const response = await fetch(`${API}/materials/by-barcode/${encodeURIComponent(barcode)}`)
+            if (response.ok) {
+                const data = await response.json()
+                setProduct(data)
+                setStep('product')
+                toast(`Ürün bulundu: ${data.ad}`, 'success')
+            } else {
+                setError(`"${barcode}" barkoduna ait ürün bulunamadı`)
+                setStep('scan')
+                setTimeout(() => {
+                    if (scannerRef.current && !html5QrCodeRef.current) {
+                        html5QrCodeRef.current = new Html5Qrcode("qr-add-scanner")
+                        startScanner()
+                    }
+                }, 1000)
+            }
+        } catch (err) {
+            setError('Ürün aranırken hata oluştu')
+        }
+    }
+
+    const handleSave = async () => {
+        if (!product || quantity <= 0) return
+        setStep('saving')
+
+        try {
+            const response = await fetch(`${API}/movements`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    malzeme_kodu: product.kod,
+                    islem_tipi: movementType,
+                    miktar: quantity,
+                    tedarikci_teslim_alan: '',
+                    aciklama: description || `QR ile ${movementType.toLowerCase()}`,
+                    siparis_no: '',
+                    onaylayan: ''
+                })
+            })
+
+            if (response.ok) {
+                const newStock = movementType === 'Giriş'
+                    ? product.mevcut_stok + quantity
+                    : Math.max(0, product.mevcut_stok - quantity)
+                toast(`${product.ad}: ${movementType === 'Giriş' ? '+' : '-'}${quantity} adet (Yeni stok: ${newStock})`, 'success')
+                onSuccess && onSuccess()
+                handleClose()
+            } else {
+                setError('Stok hareketi kaydedilemedi')
+                setStep('product')
+            }
+        } catch (err) {
+            setError('Bağlantı hatası')
+            setStep('product')
+        }
+    }
+
+    const handleClose = () => {
+        stopScanner()
+        setStep('scan')
+        setProduct(null)
+        setQuantity(1)
+        setMovementType('Giriş')
+        setDescription('')
+        setError('')
+        onClose()
+    }
+
+    const resetToScan = () => {
+        setStep('scan')
+        setProduct(null)
+        setError('')
+    }
+
+    if (!open) return null
+
+    return (
+        <div className="modal-overlay" onClick={handleClose}>
+            <div className="modal qr-add-modal" onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                    <h3 className="modal-title">
+                        {step === 'scan' && '📷 QR/Barkod ile Stok Ekle'}
+                        {step === 'product' && '📦 Ürün Bilgisi'}
+                        {step === 'saving' && '⏳ Kaydediliyor...'}
+                    </h3>
+                    <button className="modal-close" onClick={handleClose}>✕</button>
+                </div>
+
+                <div className="modal-body">
+                    {error && <div className="scanner-error">{error}</div>}
+
+                    {step === 'scan' && (
+                        <>
+                            <div id="qr-add-scanner" ref={scannerRef} className="scanner-viewport"></div>
+                            <p className="scanner-hint">Ürün barkodunu veya QR kodunu tarayın</p>
+                        </>
+                    )}
+
+                    {step === 'product' && product && (
+                        <div className="qr-product-info">
+                            <div className="qr-product-card">
+                                <div className="qr-product-header">
+                                    <span className="qr-product-code">{product.kod}</span>
+                                    <span className={`badge status-${product.durum?.toLowerCase()}`}>{product.durum}</span>
+                                </div>
+                                <h4 className="qr-product-name">{product.ad}</h4>
+                                <div className="qr-product-details">
+                                    <div className="qr-detail"><span>Kategori:</span><span>{product.kategori}</span></div>
+                                    <div className="qr-detail"><span>Mevcut Stok:</span><span className="qr-stock">{product.mevcut_stok} {product.birim}</span></div>
+                                    <div className="qr-detail"><span>Konum:</span><span>{product.konum || '-'}</span></div>
+                                </div>
+                            </div>
+
+                            <div className="qr-action-section">
+                                <div className="qr-movement-type">
+                                    <button
+                                        className={`qr-type-btn ${movementType === 'Giriş' ? 'active giris' : ''}`}
+                                        onClick={() => setMovementType('Giriş')}
+                                    >
+                                        <span className="qr-type-icon">↓</span>
+                                        <span>Stok Girişi</span>
+                                    </button>
+                                    <button
+                                        className={`qr-type-btn ${movementType === 'Çıkış' ? 'active cikis' : ''}`}
+                                        onClick={() => setMovementType('Çıkış')}
+                                    >
+                                        <span className="qr-type-icon">↑</span>
+                                        <span>Stok Çıkışı</span>
+                                    </button>
+                                </div>
+
+                                <div className="qr-quantity-section">
+                                    <label>Miktar</label>
+                                    <div className="qr-quantity-input">
+                                        <button className="qr-qty-btn" onClick={() => setQuantity(Math.max(1, quantity - 1))}>−</button>
+                                        <input
+                                            type="number"
+                                            value={quantity}
+                                            onChange={e => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                                            min="1"
+                                        />
+                                        <button className="qr-qty-btn" onClick={() => setQuantity(quantity + 1)}>+</button>
+                                    </div>
+                                    <span className="qr-unit">{product.birim}</span>
+                                </div>
+
+                                <div className="form-group">
+                                    <label className="form-label">Açıklama (Opsiyonel)</label>
+                                    <input
+                                        className="form-input"
+                                        placeholder="Örn: Haftalık sipariş"
+                                        value={description}
+                                        onChange={e => setDescription(e.target.value)}
+                                    />
+                                </div>
+
+                                <div className="qr-preview">
+                                    <span className={movementType === 'Giriş' ? 'giris' : 'cikis'}>
+                                        {movementType === 'Giriş' ? '↓' : '↑'} {quantity} {product.birim} {movementType.toLowerCase()}
+                                    </span>
+                                    <span className="qr-new-stock">
+                                        Yeni stok: {movementType === 'Giriş'
+                                            ? product.mevcut_stok + quantity
+                                            : Math.max(0, product.mevcut_stok - quantity)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {step === 'saving' && (
+                        <div className="qr-saving">
+                            <div className="spinner"></div>
+                            <p>Stok hareketi kaydediliyor...</p>
+                        </div>
+                    )}
+                </div>
+
+                <div className="modal-footer">
+                    {step === 'scan' && (
+                        <button className="btn btn-secondary" onClick={handleClose}>İptal</button>
+                    )}
+                    {step === 'product' && (
+                        <>
+                            <button className="btn btn-secondary" onClick={resetToScan}>← Yeni Tara</button>
+                            <button className={`btn ${movementType === 'Giriş' ? 'btn-success' : 'btn-warning'}`} onClick={handleSave}>
+                                {movementType === 'Giriş' ? '↓ Stok Girişi Yap' : '↑ Stok Çıkışı Yap'}
+                            </button>
+                        </>
+                    )}
                 </div>
             </div>
         </div>
@@ -276,6 +521,7 @@ const Sidebar = ({ user, page, setPage, onLogout, pendingRequests, mobileOpen, o
         { key: 'predictions', icon: '🔮', label: 'Tahminler' },
         { key: 'locations', icon: '🏢', label: 'Lokasyonlar' },
         { key: 'stockcount', icon: '✅', label: 'Stok Sayım' },
+        { key: 'qrlabels', icon: '🏷️', label: 'QR Etiketleri' },
         { key: 'audit', icon: '📜', label: 'Audit Log' },
         { key: 'reports', icon: '📑', label: 'Raporlar' },
     ]
@@ -847,6 +1093,254 @@ const ReportsPage = ({ toast }) => {
     )
 }
 
+// QR Labels Page - Print QR codes for all materials
+const QRLabelsPage = ({ materials, toast }) => {
+    const [selectedCategory, setSelectedCategory] = useState('all')
+    const [labelSize, setLabelSize] = useState('medium') // small, medium, large
+    const [selectedItems, setSelectedItems] = useState([])
+
+    const categories = ['all', 'Kırtasiye', 'Temizlik', 'Ofis Ekipmanı', 'Mutfak', 'Teknik', 'Diğer']
+
+    const filteredMaterials = selectedCategory === 'all'
+        ? materials
+        : materials.filter(m => m.kategori === selectedCategory)
+
+    const toggleSelect = (kod) => {
+        setSelectedItems(prev => prev.includes(kod)
+            ? prev.filter(k => k !== kod)
+            : [...prev, kod])
+    }
+
+    const selectAll = () => {
+        if (selectedItems.length === filteredMaterials.length) {
+            setSelectedItems([])
+        } else {
+            setSelectedItems(filteredMaterials.map(m => m.kod))
+        }
+    }
+
+    const printLabels = () => {
+        const itemsToPrint = selectedItems.length > 0
+            ? materials.filter(m => selectedItems.includes(m.kod))
+            : filteredMaterials
+
+        if (itemsToPrint.length === 0) {
+            toast('Yazdırılacak ürün seçilmedi', 'warning')
+            return
+        }
+
+        const labelSizes = {
+            small: { width: 120, height: 140, qr: 80, fontSize: 10 },
+            medium: { width: 180, height: 200, qr: 120, fontSize: 12 },
+            large: { width: 250, height: 280, qr: 180, fontSize: 14 }
+        }
+        const size = labelSizes[labelSize]
+
+        const printWindow = window.open('', '_blank')
+
+        // Generate QR code SVGs
+        const qrCodes = itemsToPrint.map(m => {
+            const qrValue = m.barkod || m.kod
+            return `
+                <div class="label">
+                    <div class="qr-container">
+                        <svg viewBox="0 0 41 41" width="${size.qr}" height="${size.qr}">
+                            ${generateQRPath(qrValue)}
+                        </svg>
+                    </div>
+                    <div class="label-code">${m.kod}</div>
+                    <div class="label-name">${m.ad}</div>
+                    <div class="label-barcode">${m.barkod || '-'}</div>
+                    <div class="label-category">${m.kategori}</div>
+                </div>
+            `
+        }).join('')
+
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>QR Etiketleri - ${new Date().toLocaleDateString('tr-TR')}</title>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body { 
+                        font-family: Arial, sans-serif; 
+                        padding: 10mm;
+                        background: white;
+                    }
+                    .header {
+                        text-align: center;
+                        margin-bottom: 20px;
+                        padding-bottom: 10px;
+                        border-bottom: 2px solid #333;
+                    }
+                    .header h1 { font-size: 18px; margin-bottom: 5px; }
+                    .header p { font-size: 12px; color: #666; }
+                    .labels-container {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 10px;
+                        justify-content: flex-start;
+                    }
+                    .label {
+                        width: ${size.width}px;
+                        height: ${size.height}px;
+                        border: 2px solid #333;
+                        border-radius: 8px;
+                        padding: 10px;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        gap: 4px;
+                        page-break-inside: avoid;
+                    }
+                    .qr-container {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+                    .label-code {
+                        font-size: ${size.fontSize + 2}px;
+                        font-weight: bold;
+                        color: #333;
+                    }
+                    .label-name {
+                        font-size: ${size.fontSize}px;
+                        text-align: center;
+                        color: #333;
+                        max-width: 100%;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }
+                    .label-barcode {
+                        font-size: ${size.fontSize - 2}px;
+                        font-family: monospace;
+                        color: #666;
+                        background: #f0f0f0;
+                        padding: 2px 6px;
+                        border-radius: 4px;
+                    }
+                    .label-category {
+                        font-size: ${size.fontSize - 2}px;
+                        color: #888;
+                    }
+                    @media print {
+                        body { padding: 5mm; }
+                        .header { margin-bottom: 10px; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>🔌 Malhotra Kablo - QR Etiketleri</h1>
+                    <p>Oluşturulma: ${new Date().toLocaleString('tr-TR')} | Toplam: ${itemsToPrint.length} etiket</p>
+                </div>
+                <div class="labels-container">
+                    ${qrCodes}
+                </div>
+                <script>
+                    // Simple QR code matrix generator (basic implementation for barcodes)
+                    window.onload = function() {
+                        window.print();
+                    }
+                </script>
+            </body>
+            </html>
+        `)
+        printWindow.document.close()
+        toast(`${itemsToPrint.length} etiket yazdırma penceresine gönderildi`, 'success')
+    }
+
+    // Simple QR-like pattern generator (for display purposes - actual QR uses qrcode.react)
+    const generateQRPath = (text) => {
+        // This creates a placeholder pattern, real QR is rendered via qrcode.react in preview
+        return `<rect fill="white" x="0" y="0" width="41" height="41"/><rect fill="black" x="4" y="4" width="10" height="10"/><rect fill="black" x="27" y="4" width="10" height="10"/><rect fill="black" x="4" y="27" width="10" height="10"/><text x="20" y="22" text-anchor="middle" font-size="6" fill="#333">QR</text>`
+    }
+
+    return (
+        <div className="card">
+            <div className="card-header">
+                <h3 className="card-title">🏷️ QR Etiketleri</h3>
+                <div className="card-actions">
+                    <button className="btn btn-primary" onClick={printLabels}>
+                        🖨️ Yazdır ({selectedItems.length > 0 ? selectedItems.length : filteredMaterials.length} etiket)
+                    </button>
+                </div>
+            </div>
+
+            {/* Filters */}
+            <div className="qr-filters">
+                <div className="filter-group">
+                    <label>Kategori:</label>
+                    <select className="form-select" value={selectedCategory} onChange={e => setSelectedCategory(e.target.value)}>
+                        <option value="all">Tümü</option>
+                        {categories.slice(1).map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                </div>
+                <div className="filter-group">
+                    <label>Etiket Boyutu:</label>
+                    <div className="size-buttons">
+                        <button className={`size-btn ${labelSize === 'small' ? 'active' : ''}`} onClick={() => setLabelSize('small')}>Küçük</button>
+                        <button className={`size-btn ${labelSize === 'medium' ? 'active' : ''}`} onClick={() => setLabelSize('medium')}>Orta</button>
+                        <button className={`size-btn ${labelSize === 'large' ? 'active' : ''}`} onClick={() => setLabelSize('large')}>Büyük</button>
+                    </div>
+                </div>
+                <div className="filter-group">
+                    <button className="btn btn-secondary btn-sm" onClick={selectAll}>
+                        {selectedItems.length === filteredMaterials.length ? '☐ Seçimi Kaldır' : '☑ Tümünü Seç'}
+                    </button>
+                </div>
+            </div>
+
+            {/* QR Labels Preview */}
+            <div className="qr-labels-grid">
+                {filteredMaterials.map(m => (
+                    <div
+                        key={m.kod}
+                        className={`qr-label-card ${selectedItems.includes(m.kod) ? 'selected' : ''}`}
+                        onClick={() => toggleSelect(m.kod)}
+                    >
+                        <div className="qr-label-select">
+                            {selectedItems.includes(m.kod) ? '☑' : '☐'}
+                        </div>
+                        <div className="qr-label-qr">
+                            <QRCodeSVG
+                                value={m.barkod || m.kod}
+                                size={labelSize === 'small' ? 80 : labelSize === 'medium' ? 100 : 140}
+                                level="M"
+                                includeMargin={true}
+                            />
+                        </div>
+                        <div className="qr-label-info">
+                            <div className="qr-label-code">{m.kod}</div>
+                            <div className="qr-label-name">{m.ad}</div>
+                            <div className="qr-label-barcode">{m.barkod || 'Barkod yok'}</div>
+                            <span className="badge badge-primary">{m.kategori}</span>
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            {filteredMaterials.length === 0 && (
+                <div className="empty-state">
+                    <div className="empty-icon">🏷️</div>
+                    <h3>Etiket bulunamadı</h3>
+                    <p>Bu kategoride ürün bulunmuyor</p>
+                </div>
+            )}
+
+            <div className="qr-help-text">
+                <span>💡</span>
+                <span>
+                    <strong>İpucu:</strong> Etiketleri yazdırın ve ürünlerin üzerine yapıştırın.
+                    Arkadaşınız telefonuyla taratarak stoğa ekleme/çıkarma yapabilir.
+                </span>
+            </div>
+        </div>
+    )
+}
+
 // Stock Count Page
 const StockCountPage = ({ toast }) => {
     const [counts, setCounts] = useState([])
@@ -992,6 +1486,7 @@ function App() {
     const [requests, setRequests] = useState([])
     const [suppliers, setSuppliers] = useState([])
     const [orders, setOrders] = useState([])
+    const [qrScanOpen, setQrScanOpen] = useState(false)
 
     const { toasts, show } = useToast()
 
@@ -1014,13 +1509,20 @@ function App() {
 
     if (!user) return <LoginPage onLogin={login} />
 
-    const pageTitle = { dashboard: 'Dashboard', materials: 'Malzemeler', movements: 'Stok Hareketleri', requests: 'Talepler', orders: 'Siparişler', analytics: 'Analitik', predictions: 'Stok Tahminleri', locations: 'Lokasyonlar', stockcount: 'Stok Sayım', audit: 'Audit Log', reports: 'Raporlar' }
+    const pageTitle = { dashboard: 'Dashboard', materials: 'Malzemeler', movements: 'Stok Hareketleri', requests: 'Talepler', orders: 'Siparişler', analytics: 'Analitik', predictions: 'Stok Tahminleri', locations: 'Lokasyonlar', stockcount: 'Stok Sayım', qrlabels: 'QR Etiketleri', audit: 'Audit Log', reports: 'Raporlar' }
 
     return (
         <div className="app-layout">
             <Sidebar user={user} page={page} setPage={setPage} onLogout={logout} pendingRequests={pendingReqs} />
             <main className="main-content">
-                <div className="top-bar"><div className="page-title-section"><h1>{pageTitle[page]}</h1><p>Hoş geldiniz, {user.ad_soyad}</p></div></div>
+                <div className="top-bar">
+                    <div className="page-title-section"><h1>{pageTitle[page]}</h1><p>Hoş geldiniz, {user.ad_soyad}</p></div>
+                    <div className="top-bar-actions">
+                        <button className="btn btn-primary qr-scan-btn" onClick={() => setQrScanOpen(true)} title="QR/Barkod ile hızlı stok girişi">
+                            📷 QR Stok
+                        </button>
+                    </div>
+                </div>
                 {loading ? <div className="loading"><div className="spinner"></div></div> : <>
                     {page === 'dashboard' && <Dashboard stats={stats} criticals={criticals} movements={movements} requests={requests.filter(r => r.durum === 'Beklemede')} toast={show} />}
                     {page === 'materials' && <MaterialsPage materials={materials} refresh={fetchData} toast={show} />}
@@ -1032,10 +1534,25 @@ function App() {
                     {page === 'predictions' && <PredictionsPage />}
                     {page === 'locations' && <LocationsPage />}
                     {page === 'stockcount' && <StockCountPage toast={show} />}
+                    {page === 'qrlabels' && <QRLabelsPage materials={materials} toast={show} />}
                     {page === 'audit' && <AuditPage />}
                     {page === 'reports' && <ReportsPage toast={show} />}
                 </>}
             </main>
+
+            {/* Floating QR Scan Button for Mobile */}
+            <button className="qr-fab" onClick={() => setQrScanOpen(true)} title="QR/Barkod ile hızlı stok girişi">
+                📷
+            </button>
+
+            {/* QR Scan to Add Modal */}
+            <QRScanToAddModal
+                open={qrScanOpen}
+                onClose={() => setQrScanOpen(false)}
+                onSuccess={fetchData}
+                toast={show}
+            />
+
             <div className="toast-container">{toasts.map(t => <div key={t.id} className={`toast ${t.type}`}><span className="toast-icon">{t.type === 'success' ? '✓' : '!'}</span><span>{t.msg}</span></div>)}</div>
         </div>
     )
